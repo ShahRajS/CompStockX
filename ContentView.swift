@@ -4,7 +4,7 @@ import SwiftUI
 
 // Symbol Search data from the /query?function=SYMBOL_SEARCH endpoint.
 struct AlphaVantageSymbolSearch: Decodable {
-    let bestMatches: [SearchMatch]
+    let bestMatches: [SearchMatch]? // Made optional for safer decoding
 
     private enum CodingKeys: String, CodingKey {
         case bestMatches = "bestMatches"
@@ -44,6 +44,7 @@ struct AlphaVantageCompanyOverview: Decodable {
     let peRatio: String?
     let revenuePerShareTTM: String?
     let earningsPerShare: String?
+    let freeCashFlow: String?
     
     private enum CodingKeys: String, CodingKey {
         case symbol = "Symbol"
@@ -52,6 +53,7 @@ struct AlphaVantageCompanyOverview: Decodable {
         case peRatio = "PERatio"
         case revenuePerShareTTM = "RevenuePerShareTTM"
         case earningsPerShare = "EPS"
+        case freeCashFlow = "FreeCashflow"
     }
 }
 
@@ -85,31 +87,101 @@ struct InsiderTransaction: Decodable, Identifiable {
     }
 }
 
+// Time Series Daily data from the /query?function=TIME_SERIES_DAILY endpoint.
+struct AlphaVantageDailyTimeSeries: Decodable {
+    let timeSeries: [String: TimeSeriesDailyData]?
+    
+    private enum CodingKeys: String, CodingKey {
+        case timeSeries = "Time Series (Daily)"
+    }
+}
+
+struct TimeSeriesDailyData: Decodable {
+    let open: String?
+    let close: String?
+    let high: String?
+    let low: String?
+    
+    private enum CodingKeys: String, CodingKey {
+        case open = "1. open"
+        case close = "4. close"
+        case high = "2. high"
+        case low = "3. low"
+    }
+}
+
+// A generic error message struct to handle API responses.
+struct AlphaVantageError: Decodable {
+    let note: String?
+    let errorMessage: String?
+    
+    private enum CodingKeys: String, CodingKey {
+        case note = "Note"
+        case errorMessage = "Error Message"
+    }
+}
+
+
+// MARK: - Analysis Report Struct
+
+// A custom struct to hold all the analysis data.
+struct AnalysisReport {
+    var peRatio: String = "N/A"
+    var rps: String = "N/A"
+    var pegRatio: String = "N/A"
+    var freeCashFlow: String = "N/A"
+    var oneMonthChange: String = "N/A"
+    var currentPrice: String = "N/A"
+    var recommendation: String = "No recommendation."
+    var insiderTransactions: String = "No recent transactions found."
+}
+
+
 // MARK: - Main App View
 
 struct ContentView: View {
     @State private var ticker: String = ""
-    @State private var analysisResult: String = "Enter a stock ticker to analyze."
+    @State private var analysisResult: AnalysisReport? = nil
     @State private var isLoading: Bool = false
     @State private var searchResults: [SearchMatch] = []
     
-    private let searchDebounceTimer = Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()
+    // This task will be used to cancel the previous search call.
+    @State private var searchTask: Task<Void, Never>? = nil
     
     var body: some View {
         VStack(spacing: 20) {
-            Text("Stock Sector Analyzer")
-                .font(.largeTitle)
-                .fontWeight(.bold)
-                .padding(.top)
+            HStack {
+                Text("Stock Sector Analyzer")
+                    .font(.largeTitle)
+                    .fontWeight(.bold)
+                    .padding(.leading)
+                
+                Spacer()
+                
+                Button(action: resetApp) {
+                    Image(systemName: "arrow.counterclockwise.circle.fill")
+                        .font(.title2)
+                        .foregroundColor(.blue)
+                }
+                .padding(.trailing)
+            }
+            .padding(.top)
             
             VStack {
                 TextField("Enter ticker (e.g., AAPL)", text: $ticker)
                     .textFieldStyle(RoundedBorderApperance())
                     .autocapitalization(.allCharacters)
                     .onChange(of: ticker) { newValue in
+                        // Cancel the previous search task if it exists.
+                        searchTask?.cancel()
+                        
                         if !newValue.isEmpty {
-                            Task {
-                                for await _ in searchDebounceTimer.values.prefix(1) {
+                            // Create a new task that will wait and then perform the search.
+                            searchTask = Task {
+                                // Wait for 1 second before making the call.
+                                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                                // Check if the task was canceled before making the API call.
+                                if !Task.isCancelled {
                                     searchResults = await fetchSymbolSearch(for: newValue) ?? []
                                 }
                             }
@@ -148,145 +220,194 @@ struct ContentView: View {
             .padding(.horizontal)
             .disabled(isLoading || ticker.isEmpty)
             
-            ScrollView {
-                Text(analysisResult)
+            // Conditional view to switch between the initial message and the analysis output
+            if analysisResult == nil {
+                Text("Enter a stock ticker to analyze.")
                     .padding()
-                    .frame(maxWidth: .infinity, alignment: analysisResult == "Enter a stock ticker to analyze." ? .center : .leading)
+                    .frame(maxWidth: .infinity, alignment: .center)
                     .background(Color(.systemGray6))
                     .cornerRadius(10)
+                    .padding(.horizontal)
+            } else {
+                VStack(spacing: 16) {
+                    // Grid for financial metrics, matching the provided design
+                    HStack(spacing: 16) {
+                        MetricCard(title: "P/E", value: analysisResult?.peRatio ?? "N/A")
+                        MetricCard(title: "RPS", value: analysisResult?.rps ?? "N/A")
+                        MetricCard(title: "PEG", value: analysisResult?.pegRatio ?? "N/A")
+                    }
+                    
+                    HStack(spacing: 16) {
+                        MetricCard(title: "FCF", value: analysisResult?.freeCashFlow ?? "N/A")
+                        MetricCard(title: "1-Month Change", value: analysisResult?.oneMonthChange ?? "N/A")
+                        MetricCard(title: "Current Price", value: analysisResult?.currentPrice ?? "N/A")
+                    }
+                    
+                    // Box for the Gemini recommendation
+                    VStack(alignment: .leading) {
+                        Text("Recommendation")
+                            .font(.headline)
+                            .padding(.bottom, 4)
+                        Text(analysisResult?.recommendation ?? "No recommendation available.")
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .padding()
+                    .background(Color(.systemGray6))
+                    .cornerRadius(10)
+                }
+                .padding(.horizontal)
             }
-            .padding(.horizontal)
             
             Spacer()
         }
     }
     
+    // MARK: - Helper Views
+    
+    // A reusable view for the metric cards
+    struct MetricCard: View {
+        let title: String
+        let value: String
+        
+        var body: some View {
+            VStack(alignment: .center) {
+                Text(title)
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                Text(value)
+                    .font(.body)
+                    .fontWeight(.bold)
+            }
+            .padding()
+            .frame(maxWidth: .infinity)
+            .background(Color(.systemGray6))
+            .cornerRadius(10)
+        }
+    }
+    
     // MARK: - App Logic
+    
+    private func resetApp() {
+        ticker = ""
+        analysisResult = nil
+        searchResults = []
+    }
     
     private func runAnalysis() {
         guard !ticker.isEmpty else {
-            analysisResult = "Please enter a ticker symbol."
             return
         }
         
         isLoading = true
-        analysisResult = "Fetching data from Alpha Vantage and running sector analysis..."
+        analysisResult = nil // Clear previous results
         
         Task {
+            // Fetch all necessary data concurrently
             async let overview = fetchCompanyOverview(for: ticker)
             async let insiderTransactions = fetchInsiderTransactions(for: ticker)
-            async let sectorAverages = getSectorAverages()
+            async let dailyTimeSeries = fetchDailyTimeSeries(for: ticker)
             
-            let analysisReport = runComparativeAnalysis(
+            let report = await self.createAnalysisReport(
                 ticker: ticker,
                 overview: await overview,
                 insiderTransactions: await insiderTransactions,
-                sectorAverages: await sectorAverages
+                dailyTimeSeries: await dailyTimeSeries
             )
-            
+
+            // Feed the report to Gemini for a final recommendation
             let geminiResponse = await getGeminiAnalysis(
                 ticker: ticker,
-                analysisReport: analysisReport
+                analysisReport: """
+                P/E: \(report.peRatio), RPS: \(report.rps), PEG: \(report.pegRatio), Free Cash Flow: \(report.freeCashFlow), 1-Month Change: \(report.oneMonthChange), Insider Transactions: \(report.insiderTransactions)
+                """
             )
             
             DispatchQueue.main.async {
-                self.analysisResult = """
-                Local Analysis Report: \(analysisReport)
-                
-                ---
-                
-                Gemini's Take:
-                \(geminiResponse)
-                """
-                
+                var finalReport = report
+                finalReport.recommendation = geminiResponse
+                self.analysisResult = finalReport
                 self.isLoading = false
             }
         }
     }
     
-    private func runComparativeAnalysis(
-        ticker: String, overview: AlphaVantageCompanyOverview?, insiderTransactions: AlphaVantageInsiderTransactions?, sectorAverages: [String: Double]
-    ) -> String {
-        guard let stockOverview = overview else {
-            return "Could not retrieve fundamental data for \(ticker). Please check the symbol or try again later due to API limits."
-        }
-        
-        var analysis = "### Analysis for \(ticker)\n"
-        var canCalculate = true
-        
-        let peRatio = Double(stockOverview.peRatio ?? "")
-        let rps = Double(stockOverview.revenuePerShareTTM ?? "")
-        
-        if let pe = peRatio {
-            analysis += "P/E Ratio: \(String(format: "%.2f", pe))\n"
-        } else {
-            analysis += "P/E Ratio: Data not available.\n"
-            canCalculate = false
-        }
-        
-        if let rpsValue = rps {
-            analysis += "Revenue Per Share: \(String(format: "%.2f", rpsValue))\n"
-        } else {
-            analysis += "Revenue Per Share: Data not available.\n"
-            canCalculate = false
-        }
-        
-        analysis += "\n"
-        
-        if canCalculate {
-            if let pe = peRatio, pe < sectorAverages["pe"] ?? Double.infinity {
-                analysis += "The stock's P/E ratio is lower than the sector average, suggesting it may be **undervalued**.\n"
-            } else {
-                analysis += "The stock's P/E ratio is higher than the sector average, suggesting it may be **overvalued**.\n"
-            }
-            
-            if let rpsValue = rps, rpsValue > sectorAverages["rps"] ?? Double.zero {
-                analysis += "The stock's Revenue Per Share is higher than the sector average, indicating **strong revenue generation** per share.\n"
-            } else {
-                analysis += "The stock's Revenue Per Share is lower than the sector average, indicating **weaker revenue generation** per share.\n"
-            }
-        } else {
-            analysis += "Cannot perform full sector comparison due to missing data."
+    private func createAnalysisReport(
+        ticker: String, overview: AlphaVantageCompanyOverview?, insiderTransactions: AlphaVantageInsiderTransactions?,
+        dailyTimeSeries: AlphaVantageDailyTimeSeries?
+    ) async -> AnalysisReport {
+        var report = AnalysisReport()
+
+        // P/E Ratio
+        if let pe = overview?.peRatio, let peValue = Double(pe) {
+            report.peRatio = String(format: "%.2f", peValue)
         }
 
-        // MARK: - Insider Transaction Analysis
-        analysis += "\n---\n\n### Recent Insider Transactions\n"
+        // Revenue Per Share
+        if let rps = overview?.revenuePerShareTTM, let rpsValue = Double(rps) {
+            report.rps = String(format: "%.2f", rpsValue)
+        }
+        
+        // Free Cash Flow
+        if let fcf = overview?.freeCashFlow, let fcfValue = Double(fcf) {
+            report.freeCashFlow = String(format: "%.2f", fcfValue)
+        }
+        
+        // PEG Ratio (placeholder, as growth rate is hard to get for free)
+        if let pe = overview?.peRatio, let eps = overview?.earningsPerShare,
+           let peValue = Double(pe), let epsValue = Double(eps) {
+            let fakeGrowthRate = 10.0 // Placeholder for growth rate
+            let peg = peValue / fakeGrowthRate
+            report.pegRatio = String(format: "%.2f", peg)
+        }
+
+
+        // 1-Month Change
+        if let timeSeries = dailyTimeSeries?.timeSeries, !timeSeries.isEmpty {
+            let sortedDates = timeSeries.keys.sorted()
+            if let firstMonthDate = sortedDates.first, let lastMonthDate = sortedDates.last,
+               let firstDayClose = Double(timeSeries[firstMonthDate]?.close ?? "0"),
+               let lastDayClose = Double(timeSeries[lastMonthDate]?.close ?? "0") {
+                if firstDayClose != 0 {
+                    let change = ((lastDayClose - firstDayClose) / firstDayClose) * 100
+                    report.oneMonthChange = String(format: "%.2f%%", change)
+                    report.currentPrice = String(format: "%.2f", lastDayClose)
+                }
+            }
+        }
+
+        // Insider Transactions
         if let transactions = insiderTransactions?.latestTransactions, !transactions.isEmpty {
-            for transaction in transactions.prefix(3) { // Show up to 3 most recent transactions
+            var transactionsString = ""
+            for transaction in transactions.prefix(3) {
                 if let owner = transaction.ownerName, let code = transaction.transactionCode, let date = transaction.transactionDate {
                     let price = transaction.transactionPrice ?? "N/A"
                     let shares = transaction.transactionShares ?? "N/A"
-                    analysis += "• \(date): \(owner) \(code == "buy" ? "bought" : "sold") \(shares) shares at $\(price).\n"
+                    transactionsString += "• \(date): \(owner) \(code == "buy" ? "bought" : "sold") \(shares) shares at $\(price).\n"
                 }
             }
-        } else {
-            analysis += "No recent insider transactions found."
+            report.insiderTransactions = transactionsString
         }
 
-        return analysis
-    }
-    
-    // MARK: - Placeholder for Sector Data
-    
-    private func getSectorAverages() async -> [String: Double] {
-        return [
-            "pe": 25.0, // Placeholder for sector average P/E
-            "rps": 100.0 // Placeholder for sector average RPS
-        ]
+        return report
     }
     
     // MARK: - API Calls
     
     private func fetchCompanyOverview(for ticker: String) async -> AlphaVantageCompanyOverview? {
-        let alphaVantageApiKey = "7VH70AFJ75RTIAX9"
+        let alphaVantageApiKey = alphaVantageApiKey
         let alphaVantageUrl = "https://www.alphavantage.co/query?function=OVERVIEW&symbol=\(ticker)&apikey=\(alphaVantageApiKey)"
         
-        guard let url = URL(string: alphaVantageUrl) else {
-            return nil
-        }
+        guard let url = URL(string: alphaVantageUrl) else { return nil }
         
         do {
             let (data, _) = try await URLSession.shared.data(from: url)
+            
+            // First, try to decode as an error message
+            if let error = try? JSONDecoder().decode(AlphaVantageError.self, from: data) {
+                print("Alpha Vantage API Error for \(ticker) Overview: \(error.note ?? error.errorMessage ?? "Unknown error")")
+                return nil
+            }
+            
             let decoder = JSONDecoder()
             let overview = try decoder.decode(AlphaVantageCompanyOverview.self, from: data)
             return overview
@@ -297,21 +418,29 @@ struct ContentView: View {
     }
     
     private func fetchSymbolSearch(for query: String) async -> [SearchMatch]? {
-        await Task.sleep(1_000_000_000)
-        
-        let alphaVantageApiKey = "7VH70AFJ75RTIAX9"
+        let alphaVantageApiKey = alphaVantageApiKey
         let alphaVantageUrl = "https://www.alphavantage.co/query?function=SYMBOL_SEARCH&keywords=\(query)&apikey=\(alphaVantageApiKey)"
         
-        guard let url = URL(string: alphaVantageUrl) else {
-            return nil
-        }
+        guard let url = URL(string: alphaVantageUrl) else { return nil }
         
         do {
             let (data, _) = try await URLSession.shared.data(from: url)
+            
+            // First, try to decode as an error message
+            if let error = try? JSONDecoder().decode(AlphaVantageError.self, from: data) {
+                print("Alpha Vantage API Error for \(query) Search: \(error.note ?? error.errorMessage ?? "Unknown error")")
+                return nil
+            }
+            
             let decoder = JSONDecoder()
             let searchResults = try decoder.decode(AlphaVantageSymbolSearch.self, from: data)
             
-            return searchResults.bestMatches.filter { $0.region == "United States" }
+            // Safely unwrap the optional bestMatches array before filtering
+            if let matches = searchResults.bestMatches {
+                return matches.filter { $0.region == "United States" }
+            } else {
+                return []
+            }
         } catch {
             print("Error fetching or decoding Alpha Vantage search results for \(query): \(error)")
             return nil
@@ -319,17 +448,20 @@ struct ContentView: View {
     }
     
     private func fetchInsiderTransactions(for ticker: String) async -> AlphaVantageInsiderTransactions? {
-        await Task.sleep(1_000_000_000)
-        
-        let alphaVantageApiKey = "7VH70AFJ75RTIAX9"
+        let alphaVantageApiKey = alphaVantageApiKey
         let alphaVantageUrl = "https://www.alphavantage.co/query?function=INSIDER_TRANSACTIONS&symbol=\(ticker)&apikey=\(alphaVantageApiKey)"
         
-        guard let url = URL(string: alphaVantageUrl) else {
-            return nil
-        }
+        guard let url = URL(string: alphaVantageUrl) else { return nil }
         
         do {
             let (data, _) = try await URLSession.shared.data(from: url)
+            
+            // First, try to decode as an error message
+            if let error = try? JSONDecoder().decode(AlphaVantageError.self, from: data) {
+                print("Alpha Vantage API Error for \(ticker) Insider Transactions: \(error.note ?? error.errorMessage ?? "Unknown error")")
+                return nil
+            }
+            
             let decoder = JSONDecoder()
             let transactions = try decoder.decode(AlphaVantageInsiderTransactions.self, from: data)
             return transactions
@@ -339,8 +471,32 @@ struct ContentView: View {
         }
     }
     
+    private func fetchDailyTimeSeries(for ticker: String) async -> AlphaVantageDailyTimeSeries? {
+        let alphaVantageApiKey = alphaVantageApiKey
+        let alphaVantageUrl = "https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol=\(ticker)&apikey=\(alphaVantageApiKey)"
+        
+        guard let url = URL(string: alphaVantageUrl) else { return nil }
+        
+        do {
+            let (data, _) = try await URLSession.shared.data(from: url)
+            
+            // First, try to decode as an error message
+            if let error = try? JSONDecoder().decode(AlphaVantageError.self, from: data) {
+                print("Alpha Vantage API Error for \(ticker) Daily Time Series: \(error.note ?? error.errorMessage ?? "Unknown error")")
+                return nil
+            }
+            
+            let decoder = JSONDecoder()
+            let timeSeries = try decoder.decode(AlphaVantageDailyTimeSeries.self, from: data)
+            return timeSeries
+        } catch {
+            print("Error fetching or decoding Alpha Vantage daily time series for \(ticker): \(error)")
+            return nil
+        }
+    }
+    
     private func getGeminiAnalysis(ticker: String, analysisReport: String) async -> String {
-        let apiKey = "AIzaSyBJw8gvfRb2D7i4nmBrByRaDdJdQn6TTPs"
+        let apiKey = geminiApiKey
         
         let prompt = """
         I've performed a fundamental analysis on the stock \(ticker) and compared it to its sector. My analysis report is: "\(analysisReport)".
@@ -365,9 +521,7 @@ struct ContentView: View {
         
         let apiUrl = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=\(apiKey)"
         
-        guard let url = URL(string: apiUrl) else {
-            return "Error: Invalid API URL."
-        }
+        guard let url = URL(string: apiUrl) else { return "Error: Invalid API URL." }
         
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
