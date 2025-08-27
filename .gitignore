@@ -5,6 +5,9 @@
 ## User settings
 xcuserdata/
 
+##API keys
+secrets.swift
+
 ## Obj-C/Swift specific
 *.hmap
 
